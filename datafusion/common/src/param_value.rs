@@ -90,14 +90,14 @@ impl ParamValues {
                         "No value found for placeholder with id {id}"
                     ))
                 })?;
-                // check if the data type of the value matches the data type of the placeholder
-                if Some(&value.data_type()) != data_type {
-                    return _internal_err!(
-                        "Placeholder value type mismatch: expected {:?}, got {:?}",
-                        data_type,
-                        value.data_type()
-                    );
-                }
+                // // check if the data type of the value matches the data type of the placeholder
+                // if Some(&value.data_type()) != data_type {
+                //     return _internal_err!(
+                //         "Placeholder value type mismatch: expected {:?}, got {:?}",
+                //         data_type,
+                //         value.data_type()
+                //     );
+                // }
                 Ok(value.clone())
             }
             ParamValues::Map(map) => {
@@ -110,13 +110,13 @@ impl ParamValues {
                     ))
                 })?;
                 // check if the data type of the value matches the data type of the placeholder
-                if Some(&value.data_type()) != data_type {
-                    return _internal_err!(
-                        "Placeholder value type mismatch: expected {:?}, got {:?}",
-                        data_type,
-                        value.data_type()
-                    );
-                }
+                // if Some(&value.data_type()) != data_type {
+                //     return _internal_err!(
+                //         "Placeholder value type mismatch: expected {:?}, got {:?}",
+                //         data_type,
+                //         value.data_type()
+                //     );
+                // }
                 Ok(value.clone())
             }
         }

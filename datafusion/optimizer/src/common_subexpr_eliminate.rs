@@ -21,7 +21,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use crate::{utils, OptimizerConfig, OptimizerRule};
+use crate::{OptimizerConfig, OptimizerRule};
 
 use arrow::datatypes::{DataType, Field};
 use datafusion_common::tree_node::{
@@ -155,16 +155,15 @@ impl CommonSubexprEliminate {
     /// Returns the rewritten expressions
     fn rewrite_exprs_list(
         &self,
-        exprs_list: &[&[Expr]],
+        exprs_list: Vec<Vec<Expr>>,
         expr_set: &ExprSet,
         affected_id: &mut BTreeSet<Identifier>,
     ) -> Result<Vec<Vec<Expr>>> {
         exprs_list
-            .iter()
+            .into_iter()
             .map(|exprs| {
                 exprs
-                    .iter()
-                    .cloned()
+                    .into_iter()
                     .map(|expr| replace_common_expr(expr, expr_set, affected_id))
                     .collect::<Result<Vec<_>>>()
             })
@@ -181,21 +180,21 @@ impl CommonSubexprEliminate {
     ///    common sub-expressions that were used
     fn rewrite_expr(
         &self,
-        exprs_list: &[&[Expr]],
-        input: &LogicalPlan,
+        exprs_list: Vec<Vec<Expr>>,
+        input: LogicalPlan,
         expr_set: &ExprSet,
         config: &dyn OptimizerConfig,
-    ) -> Result<(Vec<Vec<Expr>>, LogicalPlan)> {
+    ) -> Result<(Vec<Vec<Expr>>, Transformed<LogicalPlan>)> {
         let mut affected_id = BTreeSet::<Identifier>::new();
 
         let rewrite_exprs =
             self.rewrite_exprs_list(exprs_list, expr_set, &mut affected_id)?;
 
-        let mut new_input = self
-            .try_optimize(input, config)?
-            .unwrap_or_else(|| input.clone());
+        let mut new_input = self.rewrite(input, config)?;
         if !affected_id.is_empty() {
-            new_input = build_common_expr_project_plan(new_input, affected_id, expr_set)?;
+            new_input = new_input.map_data(|input| {
+                build_common_expr_project_plan(input, affected_id, expr_set)
+            })?;
         }
 
         Ok((rewrite_exprs, new_input))
@@ -203,9 +202,9 @@ impl CommonSubexprEliminate {
 
     fn try_optimize_window(
         &self,
-        window: &Window,
+        window: Window,
         config: &dyn OptimizerConfig,
-    ) -> Result<LogicalPlan> {
+    ) -> Result<Transformed<LogicalPlan>> {
         let mut window_exprs = vec![];
         let mut expr_set = ExprSet::default();
 
@@ -218,23 +217,18 @@ impl CommonSubexprEliminate {
         // WindowAggr: windowExpr=[[SUM(c9) ORDER BY [c3 + c4] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW]]
         // --WindowAggr: windowExpr=[[SUM(c9) ORDER BY [c3 + c4] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW]]
         // where, it is referred once by each `WindowAggr` (total of 2) in the plan.
-        let mut plan = LogicalPlan::Window(window.clone());
-        while let LogicalPlan::Window(window) = plan {
+        let mut plan = LogicalPlan::Window(window);
+        let mut plan_ref = &plan;
+        while let LogicalPlan::Window(window) = plan_ref {
             let Window {
                 input, window_expr, ..
             } = window;
-            plan = input.as_ref().clone();
+            plan_ref = input.as_ref();
 
             let input_schema = Arc::clone(input.schema());
             expr_set.populate_expr_set(&window_expr, input_schema, ExprMask::Normal)?;
-
             window_exprs.push(window_expr);
         }
-
-        let mut window_exprs = window_exprs
-            .iter()
-            .map(|expr| expr.as_slice())
-            .collect::<Vec<_>>();
 
         let (mut new_expr, new_input) =
             self.rewrite_expr(&window_exprs, &plan, &expr_set, config)?;
@@ -265,9 +259,9 @@ impl CommonSubexprEliminate {
 
     fn try_optimize_aggregate(
         &self,
-        aggregate: &Aggregate,
+        aggregate: Aggregate,
         config: &dyn OptimizerConfig,
-    ) -> Result<LogicalPlan> {
+    ) -> Result<Transformed<LogicalPlan>> {
         let Aggregate {
             group_expr,
             aggr_expr,
@@ -279,11 +273,11 @@ impl CommonSubexprEliminate {
         // build expr_set, with groupby and aggr
         let input_schema = Arc::clone(input.schema());
         expr_set.populate_expr_set(
-            group_expr,
+            group_expr.as_slice(),
             Arc::clone(&input_schema),
             ExprMask::Normal,
         )?;
-        expr_set.populate_expr_set(aggr_expr, input_schema, ExprMask::Normal)?;
+        expr_set.populate_expr_set(aggr_expr.as_slice(), input_schema, ExprMask::Normal)?;
 
         // rewrite inputs
         let (mut new_expr, new_input) =
@@ -372,9 +366,9 @@ impl CommonSubexprEliminate {
 
     fn try_unary_plan(
         &self,
-        plan: &LogicalPlan,
+        plan: LogicalPlan,
         config: &dyn OptimizerConfig,
-    ) -> Result<LogicalPlan> {
+    ) -> Result<Transformed<LogicalPlan>> {
         let expr = plan.expressions();
         let inputs = plan.inputs();
         let input = inputs[0];
@@ -387,7 +381,10 @@ impl CommonSubexprEliminate {
         let (mut new_expr, new_input) =
             self.rewrite_expr(&[&expr], input, &expr_set, config)?;
 
-        plan.with_new_exprs(pop_expr(&mut new_expr)?, vec![new_input])
+        Ok(Transformed::yes(plan.with_new_exprs(
+            pop_expr(&mut new_expr)?,
+            vec![new_input],
+        )?))
     }
 }
 
@@ -407,15 +404,17 @@ impl OptimizerRule for CommonSubexprEliminate {
         plan: LogicalPlan,
         config: &dyn OptimizerConfig,
     ) -> Result<Transformed<LogicalPlan>, DataFusionError> {
-        let optimized_plan = match &plan {
+        let transformed_plan @ Transformed {
+            data: plan,
+            transformed,
+            ..
+        } = match plan {
             LogicalPlan::Projection(_)
             | LogicalPlan::Sort(_)
-            | LogicalPlan::Filter(_) => Some(self.try_unary_plan(&plan, config)?),
-            LogicalPlan::Window(window) => {
-                Some(self.try_optimize_window(window, config)?)
-            }
+            | LogicalPlan::Filter(_) => self.try_unary_plan(plan, config)?,
+            LogicalPlan::Window(window) => self.try_optimize_window(window, config)?,
             LogicalPlan::Aggregate(aggregate) => {
-                Some(self.try_optimize_aggregate(aggregate, config)?)
+                self.try_optimize_aggregate(aggregate, config)?
             }
             LogicalPlan::Join(_)
             | LogicalPlan::CrossJoin(_)
@@ -440,21 +439,18 @@ impl OptimizerRule for CommonSubexprEliminate {
             | LogicalPlan::RecursiveQuery(_)
             | LogicalPlan::Prepare(_) => {
                 // apply the optimization to all inputs of the plan
-                utils::optimize_children(self, &plan, config)?
+                plan.map_children(|plan| self.rewrite(plan, config))?
             }
         };
-
         let original_schema = plan.schema().clone();
-        match optimized_plan {
-            Some(optimized_plan) if optimized_plan.schema() != &original_schema => {
-                // add an additional projection if the output schema changed.
-                Ok(Transformed::yes(build_recover_project_plan(
-                    &original_schema,
-                    optimized_plan,
-                )?))
-            }
-            Some(plan) => Ok(Transformed::yes(plan)),
-            None => Ok(Transformed::no(plan)),
+        if transformed && plan.schema() != &original_schema {
+            // add an additional projection if the output schema changed.
+            Ok(Transformed::yes(build_recover_project_plan(
+                &original_schema,
+                plan,
+            )?))
+        } else {
+            Ok(transformed_plan)
         }
     }
 

@@ -392,15 +392,25 @@ impl CommonSubexprEliminate {
 }
 
 impl OptimizerRule for CommonSubexprEliminate {
+    fn supports_rewrite(&self) -> bool {
+        true
+    }
     fn try_optimize(
         &self,
-        plan: &LogicalPlan,
-        config: &dyn OptimizerConfig,
+        _plan: &LogicalPlan,
+        _config: &dyn OptimizerConfig,
     ) -> Result<Option<LogicalPlan>> {
-        let optimized_plan = match plan {
+        internal_err!("Should have called CommonSubexprEliminate::rewrite")
+    }
+    fn rewrite(
+        &self,
+        plan: LogicalPlan,
+        config: &dyn OptimizerConfig,
+    ) -> Result<Transformed<LogicalPlan>, DataFusionError> {
+        let optimized_plan = match &plan {
             LogicalPlan::Projection(_)
             | LogicalPlan::Sort(_)
-            | LogicalPlan::Filter(_) => Some(self.try_unary_plan(plan, config)?),
+            | LogicalPlan::Filter(_) => Some(self.try_unary_plan(&plan, config)?),
             LogicalPlan::Window(window) => {
                 Some(self.try_optimize_window(window, config)?)
             }
@@ -430,7 +440,7 @@ impl OptimizerRule for CommonSubexprEliminate {
             | LogicalPlan::RecursiveQuery(_)
             | LogicalPlan::Prepare(_) => {
                 // apply the optimization to all inputs of the plan
-                utils::optimize_children(self, plan, config)?
+                utils::optimize_children(self, &plan, config)?
             }
         };
 
@@ -438,12 +448,13 @@ impl OptimizerRule for CommonSubexprEliminate {
         match optimized_plan {
             Some(optimized_plan) if optimized_plan.schema() != &original_schema => {
                 // add an additional projection if the output schema changed.
-                Ok(Some(build_recover_project_plan(
+                Ok(Transformed::yes(build_recover_project_plan(
                     &original_schema,
                     optimized_plan,
                 )?))
             }
-            plan => Ok(plan),
+            Some(plan) => Ok(Transformed::yes(plan)),
+            None => Ok(Transformed::no(plan)),
         }
     }
 

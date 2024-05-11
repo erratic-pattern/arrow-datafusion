@@ -1654,8 +1654,8 @@ fn fmt_function(
     write!(f, "{}({}{})", fun, distinct_str, args.join(", "))
 }
 
-fn write_function_name<'a>(
-    w: &'a mut (dyn Write + 'a),
+fn write_function_name<W: Write>(
+    w: &mut W,
     fun: &str,
     distinct: bool,
     args: &[Expr],
@@ -1677,7 +1677,7 @@ pub(crate) fn create_name(e: &Expr) -> Result<String> {
     Ok(s)
 }
 
-fn write_name<'a>(w: &'a mut (dyn Write + 'a), e: &Expr) -> Result<()> {
+fn write_name<W: Write>(w: &mut W, e: &Expr) -> Result<()> {
     match e {
         Expr::Alias(Alias { name, .. }) => write!(w, "{}", name)?,
         Expr::Column(c) => write!(w, "{}", c.flat_name())?,
@@ -1966,15 +1966,11 @@ fn write_name<'a>(w: &'a mut (dyn Write + 'a), e: &Expr) -> Result<()> {
     Ok(())
 }
 
-fn write_names<'a>(w: &'a mut (dyn Write + 'a), exprs: &[Expr]) -> Result<()> {
+fn write_names<W: Write>(w: &mut W, exprs: &[Expr]) -> Result<()> {
     exprs.iter().try_for_each(|e| write_name(w, e))
 }
 
-fn write_names_join<'a>(
-    w: &'a mut (dyn Write + 'a),
-    exprs: &[Expr],
-    sep: &str,
-) -> Result<()> {
+fn write_names_join<W: Write>(w: &mut W, exprs: &[Expr], sep: &str) -> Result<()> {
     let mut iter = exprs.iter();
     if let Some(first_arg) = iter.next() {
         write_name(w, first_arg)?;

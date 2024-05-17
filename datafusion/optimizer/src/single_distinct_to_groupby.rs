@@ -202,10 +202,8 @@ impl OptimizerRule for SingleDistinctToGroupBy {
                                 distinct,
                                 ..
                             }) => {
-                                // is_single_distinct_agg ensure args.len=1
-                                if *distinct
-                                    && group_fields_set.insert(args[0].display_name()?)
-                                {
+                                if *distinct && group_fields_set.insert(&args[0]) {
+                                    debug_assert_eq!(args.len(), 1, "DISTINCT aggregate should have exactly one argument");
                                     inner_group_exprs.push(
                                         args[0].clone().alias(SINGLE_DISTINCT_ALIAS),
                                     );

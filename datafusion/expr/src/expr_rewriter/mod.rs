@@ -270,13 +270,13 @@ pub fn unalias(expr: Expr) -> Expr {
 ///
 /// This is important when optimizing plans to ensure the output
 /// schema of plan nodes don't change after optimization
-pub fn rewrite_preserving_name<R>(expr: Expr, rewriter: &mut R) -> Result<Expr>
+pub fn rewrite_preserving_name<R>(expr: Expr, rewriter: &mut R) -> Result<Transformed<Expr>>
 where
     R: TreeNodeRewriter<Node = Expr>,
 {
     let original_name = expr.name_for_alias()?;
-    let expr = expr.rewrite(rewriter)?.data;
-    expr.alias_if_changed(original_name)
+    expr.rewrite(rewriter)?
+        .map_data(|expr| expr.alias_if_changed(original_name))
 }
 
 #[cfg(test)]
